@@ -85,13 +85,13 @@
       border-top: 1px solid #f1f5f9;
     }
 
-    .quick-periods {
+    .quick-periods, .granularity-group {
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
     }
 
-    .period-btn {
+    .period-btn, .gran-btn {
       padding: 7px 12px;
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -102,8 +102,8 @@
       cursor: pointer;
       transition: all 0.15s;
     }
-    .period-btn:hover { background: #f8fafc; }
-    .period-btn.active {
+    .period-btn:hover, .gran-btn:hover { background: #f8fafc; }
+    .period-btn.active, .gran-btn.active {
       background: var(--primary);
       color: #fff;
       border-color: var(--primary);
@@ -182,7 +182,7 @@
       align-items: center;
       margin-bottom: 16px;
       flex-wrap: wrap;
-      gap: 8px;
+      gap: 10px;
     }
     .card-title { font-size: 1.02rem; font-weight: 700; }
     .card-desc { font-size: 0.8rem; color: var(--sub); }
@@ -348,16 +348,21 @@
     </div>
   </section>
 
-  <!-- 월별 장기 누적 추이 차트 (1년~2년+ 조회용) -->
+  <!-- 일자별 / 주별 / 월별 추이 차트 -->
   <section class="card">
     <div class="card-header">
       <div>
-        <div class="card-title">월별(Monthly) 장기 누적 클릭수 · 전환수 추이</div>
-        <div class="card-desc">1년 · 2년 이상 축적된 월별 성장 추이 및 시즌별 성과 비교</div>
+        <div class="card-title" id="trendChartTitle">주별 클릭수 · 전환수 추이</div>
+        <div class="card-desc" id="trendChartDesc">선택한 기간 내 주차별(월요일 시작 기준) 유입 클릭수 및 전환수 변화</div>
+      </div>
+      <div class="granularity-group" id="granularityGroup">
+        <button class="gran-btn" data-gran="daily">일자별</button>
+        <button class="gran-btn active" data-gran="weekly">주별</button>
+        <button class="gran-btn" data-gran="monthly">월별</button>
       </div>
     </div>
     <div class="chart-box-tall">
-      <canvas id="monthlyChart"></canvas>
+      <canvas id="trendChart"></canvas>
     </div>
   </section>
 
@@ -441,7 +446,7 @@
   </section>
 
   <div class="footer-note">
-    * 구글 스프레드시트 누적 DB와 연결 시 수년 치 일별 원본 로그가 자동 합산되어 표시됩니다.
+    * 구글 스프레드시트 누적 DB와 연결 시 수년 치 일별 원본 로그가 일자별·주별·월별로 자동 합산되어 표시됩니다.
   </div>
 </div>
 
@@ -455,8 +460,9 @@
   const DOW_NAMES = ["일", "월", "화", "수", "목", "금", "토"];
   const DOW_ORDER = ["월", "화", "수", "목", "금", "토", "일"];
 
+  let currentGranularity = "weekly"; // "daily" | "weekly" | "monthly"
   let rawRecords = [];
-  let monthlyChartInstance = null;
+  let trendChartInstance = null;
   let dowChartInstance = null;
   let hourChartInstance = null;
 
@@ -468,7 +474,24 @@
     return `${y}-${m}-${day}`;
   }
 
-  // 2년치(24개월) 누적 원본 로그 샘플 생성기 (실제 시트 데이터 구조와 동일)
+  // 해당 날짜가 속한 주의 월요일 날짜 구하기
+  function getWeekStartMonday(dateStr) {
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const dt = new Date(y, m - 1, d);
+    const day = dt.getDay(); // 0(일) ~ 6(토)
+    const diff = (day === 0 ? -6 : 1 - day);
+    dt.setDate(dt.getDate() + diff);
+    return `${formatDate(dt)} 주`;
+  }
+
+  // 선택된 단위(일자별/주별/월별)에 따른 그룹 키 반환
+  function getTrendBucketKey(dateStr, gran) {
+    if (gran === "daily") return dateStr;
+    if (gran === "monthly") return dateStr.slice(0, 7);
+    return getWeekStartMonday(dateStr);
+  }
+
+  // 2년치(24개월) 누적 원본 로그 샘플 생성기
   function generateTwoYearSampleRecords() {
     const templates = [
       { channel: "네이버 키워드", keyword: "분양 상담 신청", button: "빠른상담 예약하기", country: "대한민국 (KR)", region: "경기도", hour: 10, baseClicks: 15, baseBtn: 4, baseConv: 1 },
@@ -483,7 +506,7 @@
 
     const records = [];
     const today = new Date();
-    const totalDays = 730; // 최근 2년(730일)
+    const totalDays = 730;
 
     for (let i = totalDays; i >= 0; i--) {
       const d = new Date(today);
@@ -492,10 +515,8 @@
       const dow = DOW_NAMES[d.getDay()];
       const isWeekend = (dow === "토" || dow === "일");
       const weekendFactor = isWeekend ? 0.6 : 1.1;
-      // 최근으로 올수록 유입이 점진적으로 증가하는 추세 반영
       const growthFactor = 0.75 + ((totalDays - i) / totalDays) * 0.5;
 
-      // 하루에 3~4개 레코드 샘플링
       templates.forEach((tpl, idx) => {
         if ((i + idx) % 2 === 0) {
           const clicks = Math.max(1, Math.round(tpl.baseClicks * weekendFactor * growthFactor));
@@ -567,6 +588,29 @@
     renderFilteredView();
   }
 
+  function setGranularity(gran) {
+    currentGranularity = gran;
+    document.querySelectorAll(".gran-btn").forEach(btn => {
+      btn.classList.toggle("active", btn.dataset.gran === gran);
+    });
+
+    const titleEl = document.getElementById("trendChartTitle");
+    const descEl = document.getElementById("trendChartDesc");
+
+    if (gran === "daily") {
+      titleEl.textContent = "일자별 클릭수 · 전환수 추이";
+      descEl.textContent = "선택한 기간 내 일자별(YYYY-MM-DD) 유입 클릭수 및 전환수 변화";
+    } else if (gran === "monthly") {
+      titleEl.textContent = "월별 클릭수 · 전환수 추이";
+      descEl.textContent = "선택한 기간 내 월별(YYYY-MM) 누적 클릭수 및 전환수 변화";
+    } else {
+      titleEl.textContent = "주별 클릭수 · 전환수 추이";
+      descEl.textContent = "선택한 기간 내 주차별(월요일 시작 기준) 유입 클릭수 및 전환수 변화";
+    }
+
+    renderFilteredView();
+  }
+
   function getChannelTagClass(channel) {
     if (channel === "네이버 키워드") return "tag-naver-ad";
     if (channel === "구글 애즈") return "tag-google-ad";
@@ -587,9 +631,8 @@
       return matchDate && matchChannel;
     });
 
-    // 집계용 맵
     let totalClicks = 0, totalBtnClicks = 0, totalConversions = 0;
-    const monthlyMap = {};
+    const trendMap = {};
     const dowMap = { "월": { c: 0, v: 0 }, "화": { c: 0, v: 0 }, "수": { c: 0, v: 0 }, "목": { c: 0, v: 0 }, "금": { c: 0, v: 0 }, "토": { c: 0, v: 0 }, "일": { c: 0, v: 0 } };
     const hourArr = Array.from({ length: 24 }, () => ({ c: 0, v: 0 }));
     const countryMap = {};
@@ -601,11 +644,11 @@
       totalBtnClicks += r.btnClicks;
       totalConversions += r.conversions;
 
-      // 월별 (YYYY-MM)
-      const ym = r.date.slice(0, 7);
-      if (!monthlyMap[ym]) monthlyMap[ym] = { c: 0, v: 0 };
-      monthlyMap[ym].c += r.clicks;
-      monthlyMap[ym].v += r.conversions;
+      // 일자별 / 주별 / 월별 집계
+      const bucketKey = getTrendBucketKey(r.date, currentGranularity);
+      if (!trendMap[bucketKey]) trendMap[bucketKey] = { c: 0, v: 0 };
+      trendMap[bucketKey].c += r.clicks;
+      trendMap[bucketKey].v += r.conversions;
 
       // 요일별
       if (dowMap[r.dow]) {
@@ -664,12 +707,12 @@
     document.getElementById("lastUpdated").textContent =
       `조회 기간: ${startStr} ~ ${endStr} | 화면 갱신: ${new Date().toLocaleString("ko-KR")}`;
 
-    // 2. 월별 차트
-    const sortedMonths = Object.keys(monthlyMap).sort();
-    renderMonthlyChart(
-      sortedMonths,
-      sortedMonths.map(m => monthlyMap[m].c),
-      sortedMonths.map(m => monthlyMap[m].v)
+    // 2. 추이 차트 (일자별 / 주별 / 월별)
+    const sortedBuckets = Object.keys(trendMap).sort();
+    renderTrendChart(
+      sortedBuckets,
+      sortedBuckets.map(k => trendMap[k].c),
+      sortedBuckets.map(k => trendMap[k].v)
     );
 
     // 3. 요일별 차트
@@ -743,22 +786,24 @@
     });
   }
 
-  function renderMonthlyChart(labels, clicks, convs) {
-    if (monthlyChartInstance) monthlyChartInstance.destroy();
-    monthlyChartInstance = new Chart(document.getElementById("monthlyChart"), {
+  function renderTrendChart(labels, clicks, convs) {
+    if (trendChartInstance) trendChartInstance.destroy();
+    const unitLabel = currentGranularity === "daily" ? "일자별" : currentGranularity === "monthly" ? "월별" : "주별";
+
+    trendChartInstance = new Chart(document.getElementById("trendChart"), {
       type: "bar",
       data: {
         labels,
         datasets: [
           {
-            label: "월별 유입 클릭수",
+            label: `${unitLabel} 유입 클릭수`,
             data: clicks,
             backgroundColor: "rgba(37, 99, 235, 0.78)",
             borderRadius: 5,
             yAxisID: "y"
           },
           {
-            label: "월별 전환수",
+            label: `${unitLabel} 전환수`,
             data: convs,
             type: "line",
             borderColor: "#10b981",
@@ -858,6 +903,9 @@
   // 이벤트 바인딩 및 초기 실행
   document.querySelectorAll(".period-btn").forEach(btn => {
     btn.addEventListener("click", () => setQuickPeriod(btn.dataset.days));
+  });
+  document.querySelectorAll(".gran-btn").forEach(btn => {
+    btn.addEventListener("click", () => setGranularity(btn.dataset.gran));
   });
   document.getElementById("channelFilter").addEventListener("change", renderFilteredView);
 
